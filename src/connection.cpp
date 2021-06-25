@@ -67,15 +67,6 @@ static bool Connect(PyObject* pConnectString, HDBC hdbc, bool fAnsi, long timeou
 
     SQLRETURN ret;
 
-    if (timeout > 0)
-    {
-        Py_BEGIN_ALLOW_THREADS
-        ret = SQLSetConnectAttr(hdbc, SQL_ATTR_LOGIN_TIMEOUT, (SQLPOINTER)(uintptr_t)timeout, SQL_IS_UINTEGER);
-        Py_END_ALLOW_THREADS
-        if (!SQL_SUCCEEDED(ret))
-            RaiseErrorFromHandle(0, "SQLSetConnectAttr(SQL_ATTR_LOGIN_TIMEOUT)", hdbc, SQL_NULL_HANDLE);
-    }
-
     const char* szEncoding = 0;
     Object encBytes;
     if (encoding)
