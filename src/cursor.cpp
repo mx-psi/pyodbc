@@ -25,6 +25,7 @@
 #include "getdata.h"
 #include "dbspecific.h"
 #include <datetime.h>
+#include <pthread.h>
 
 enum
 {
@@ -554,6 +555,57 @@ static bool PrepareResults(Cursor* cur, int cCols)
     return true;
 }
 
+struct _SQLExecuteArgs
+{
+    HSTMT* hstmt; 
+    SQLRETURN ret;
+    bool reachedEnd;
+};
+
+ static void* sqlThreadSQLExecute(void *arg) {
+     struct _SQLExecuteArgs* sqlArgs = (struct _SQLExecuteArgs *) arg;
+     sqlArgs->reachedEnd = false;
+     sqlArgs->ret = SQLExecute(*(sqlArgs->hstmt));
+     sqlArgs->reachedEnd = true;
+     void* ret = (void *) sqlArgs->ret;
+     return ret;
+ }
+
+struct _SQLExecDirectWArgs 
+{
+    HSTMT* hstmt;
+    SQLWCHAR* pch;
+    SQLINTEGER cch;
+    SQLRETURN ret;
+    bool reachedEnd;
+};
+
+ static void* sqlThreadSQLExecDirectW(void *arg) {
+     struct _SQLExecDirectWArgs* sqlArgs = (struct _SQLExecDirectWArgs *) arg;
+     sqlArgs->reachedEnd = false;
+     sqlArgs->ret = SQLExecDirectW(*(sqlArgs->hstmt), sqlArgs->pch, sqlArgs->cch);
+     sqlArgs->reachedEnd = true;
+     void* ret = (void *) sqlArgs->ret;
+     return ret;
+ }
+
+struct _SQLExecDirectArgs 
+{
+    HSTMT* hstmt;
+    SQLCHAR* pch;
+    SQLINTEGER cch;
+    SQLRETURN ret;
+    bool reachedEnd;
+};
+
+ static void* sqlThreadSQLExecDirect(void *arg) {
+     struct _SQLExecDirectArgs* sqlArgs = (struct _SQLExecDirectArgs *) arg;
+     sqlArgs->reachedEnd = false;
+     sqlArgs->ret = SQLExecDirect(*(sqlArgs->hstmt), sqlArgs->pch, sqlArgs->cch);
+     sqlArgs->reachedEnd = true;
+     void* ret = (void *) sqlArgs->ret;
+     return ret;
+ }
 
 static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool skip_first)
 {
@@ -571,6 +623,7 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
     //   entire tuple passed to Cursor.execute.)  Otherwise all of the params are used.  (This case occurs when called
     //   from Cursor.executemany, in which case the sequences do not contain the SQL statement.)  Ignored if params is
     //   zero.
+    //
 
     if (params)
     {
@@ -599,9 +652,29 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
             return 0;
 
         szLastFunction = "SQLExecute";
+        pthread_t tid;
+        bool reachedEnd = true;
         Py_BEGIN_ALLOW_THREADS
-        ret = SQLExecute(cur->hstmt);
+        if(cur->timeout == 0)
+        {
+            ret = SQLExecute(cur->hstmt);
+        } else 
+        {
+            struct _SQLExecuteArgs sqlArgs = {
+                &(cur->hstmt),
+                0,
+                false,
+            };
+
+            pthread_create(&tid, nullptr, &sqlThreadSQLExecute, &sqlArgs);
+            pthread_join(tid, nullptr);
+            ret = sqlArgs.ret;
+            reachedEnd = sqlArgs.reachedEnd;
+        }
         Py_END_ALLOW_THREADS
+        if (!reachedEnd) {
+            return RaiseErrorV(0, PyExc_TypeError, "SQL query timed out");
+        }
     }
     else
     {
@@ -636,10 +709,49 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
         SQLINTEGER  cch = (SQLINTEGER)(PyBytes_GET_SIZE(query.Get()) / (isWide ? sizeof(ODBCCHAR) : 1));
 
         Py_BEGIN_ALLOW_THREADS
-        if (isWide)
-            ret = SQLExecDirectW(cur->hstmt, (SQLWCHAR*)pch, cch);
-        else
-            ret = SQLExecDirect(cur->hstmt, (SQLCHAR*)pch, cch);
+        if (isWide){
+            if (cur->timeout == 0) {
+                ret = SQLExecDirectW(cur->hstmt, (SQLWCHAR*)pch, cch);
+            } else {
+                pthread_t tid;
+                struct _SQLExecDirectWArgs sqlArgs = {
+                    &(cur->hstmt),
+                    (SQLWCHAR*)pch, 
+                    cch,
+                    0,
+                    false,
+                };
+
+                pthread_create(&tid, nullptr, &sqlThreadSQLExecDirectW, &sqlArgs);
+                pthread_join(tid, nullptr);
+                ret = sqlArgs.ret;
+                if (!sqlArgs.reachedEnd) {
+                    return RaiseErrorV(0, PyExc_TypeError, "SQL query timed out");
+                }
+            }
+        }
+        else 
+        {
+            if (cur->timeout == 0) {
+                ret = SQLExecDirect(cur->hstmt, (SQLCHAR*)pch, cch);
+            } else {
+                pthread_t tid;
+                struct _SQLExecDirectArgs sqlArgs = {
+                    &(cur->hstmt),
+                    (SQLCHAR*)pch, 
+                    cch,
+                    0,
+                    false,
+                };
+
+                pthread_create(&tid, nullptr, &sqlThreadSQLExecDirect, &sqlArgs);
+                pthread_join(tid, nullptr);
+                ret = sqlArgs.ret;
+                if (!sqlArgs.reachedEnd) {
+                    return RaiseErrorV(0, PyExc_TypeError, "SQL query timed out");
+                }
+            }
+        }
         Py_END_ALLOW_THREADS
     }
 
@@ -2099,6 +2211,9 @@ static char fastexecmany_doc[] =
     "This read/write attribute specifies whether to use a faster executemany() which\n" \
     "uses parameter arrays. Not all drivers may work with this implementation.";
 
+static char timeout_doc[] =
+    "This read/write attribute specifies whether to stop queries after a timeout.\n";
+
 static PyMemberDef Cursor_members[] =
 {
     {"rowcount",    T_INT,       offsetof(Cursor, rowcount),        READONLY, rowcount_doc },
@@ -2106,6 +2221,7 @@ static PyMemberDef Cursor_members[] =
     {"arraysize",   T_INT,       offsetof(Cursor, arraysize),       0,        arraysize_doc },
     {"connection",  T_OBJECT_EX, offsetof(Cursor, cnxn),            READONLY, connection_doc },
     {"fast_executemany",T_BOOL,  offsetof(Cursor, fastexecmany),    0,        fastexecmany_doc },
+    {"timeout",     T_LONG,      offsetof(Cursor, timeout),         0,        timeout_doc },
     { 0 }
 };
 
@@ -2394,6 +2510,7 @@ Cursor_New(Connection* cnxn)
         cur->rowcount          = -1;
         cur->map_name_to_index = 0;
         cur->fastexecmany      = 0;
+        cur->timeout           = 0;
 
         Py_INCREF(cnxn);
         Py_INCREF(cur->description);
