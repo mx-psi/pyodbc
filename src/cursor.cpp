@@ -607,6 +607,22 @@ struct _SQLExecDirectArgs
      return ret;
  }
 
+ struct _SQLFetchArgs
+{
+    HSTMT* hstmt;
+    SQLRETURN ret;
+    bool reachedEnd;
+};
+
+ static void* sqlThreadSQLFetch(void *arg) {
+     struct _SQLFetchArgs* sqlArgs = (struct _SQLFetchArgs *) arg;
+     sqlArgs->reachedEnd = false;
+     sqlArgs->ret = SQLFetch(*(sqlArgs->hstmt));
+     sqlArgs->reachedEnd = true;
+     void* ret = (void *) sqlArgs->ret;
+     return ret;
+ }
+
  int timePlusTimeout(long timeout, struct timespec* ts) {
      if (clock_gettime(CLOCK_REALTIME, ts) == -1) {
          return -1;
@@ -1217,10 +1233,43 @@ static PyObject* Cursor_fetch(Cursor* cur)
     SQLRETURN ret = 0;
     Py_ssize_t field_count, i;
     PyObject** apValues;
+    int thread_ret = 0;
+    pthread_t tid;
+    bool reachedEnd = true;
+
 
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLFetch(cur->hstmt);
+    if(cur->timeout == 0)
+    {
+        ret = SQLFetch(cur->hstmt);
+    } else {
+        struct _SQLFetchArgs sqlArgs = {
+            &(cur->hstmt),
+            0,
+            false,
+        };
+        pthread_create(&tid, nullptr, &sqlThreadSQLFetch, &sqlArgs);
+        struct timespec ts;
+        timePlusTimeout(cur->timeout, &ts);
+        int thread_ret = pthread_timedjoin_np(tid, nullptr, &ts);
+        reachedEnd = sqlArgs.reachedEnd;
+        ret = sqlArgs.ret;
+    }
     Py_END_ALLOW_THREADS
+
+    if(thread_ret == EINVAL) {
+        int err = pthread_cancel(tid);
+        if (err == ESRCH) {
+            return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+        }
+        return RaiseErrorV(0, PyExc_TypeError, "timeout value is invalid");
+    } else if (thread_ret == ETIMEDOUT || !reachedEnd) {
+        int err = pthread_cancel(tid);
+        if (err == ESRCH) {
+            return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+        }
+        return RaiseErrorV(0, PyExc_TypeError, "SQL query timed out");
+    }
 
     if (cur->cnxn->hdbc == SQL_NULL_HANDLE)
     {
