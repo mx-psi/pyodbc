@@ -35,6 +35,14 @@ enum
     CURSOR_RAISE_ERROR     = 0x00000010,
 };
 
+int timePlusTimeout(long timeout, struct timespec* ts) {
+    if (clock_gettime(CLOCK_REALTIME, ts) == -1) {
+        return -1;
+    }
+    ts->tv_sec += timeout;
+    return 0;
+}
+
 inline bool StatementIsValid(Cursor* cursor)
 {
     return cursor->cnxn != 0 && ((Connection*)cursor->cnxn)->hdbc != SQL_NULL_HANDLE && cursor->hstmt != SQL_NULL_HANDLE;
@@ -306,6 +314,23 @@ enum free_results_flags
     PREPARED_MASK  = 0x0C
 };
 
+struct _SQLFreeStmtArgs
+{
+    HSTMT* hstmt;
+    SQLUSMALLINT opt;
+    SQLRETURN ret;
+    bool reachedEnd;
+};
+
+static void* sqlThreadSQLFreeStmt(void *arg) {
+    struct _SQLFreeStmtArgs* sqlArgs = (struct _SQLFreeStmtArgs *) arg;
+    sqlArgs->reachedEnd = false;
+    sqlArgs->ret = SQLFreeStmt(*(sqlArgs->hstmt), sqlArgs->opt);
+    sqlArgs->reachedEnd = true;
+    void* ret = (void *) sqlArgs->ret;
+    return ret;
+}
+
 static bool free_results(Cursor* self, int flags)
 {
     // Internal function called any time we need to free the memory associated with query results.  It is safe to call
@@ -313,6 +338,10 @@ static bool free_results(Cursor* self, int flags)
 
     // If we ran out of memory, it is possible that we have a cursor but colinfos is zero.  However, we should be
     // deleting this object, so the cursor will be freed when the HSTMT is destroyed. */
+
+    int thread_ret = 0;
+    pthread_t tid;
+    bool reachedEnd = true;
 
     I((flags & STATEMENT_MASK) != 0);
     I((flags & PREPARED_MASK) != 0);
@@ -334,14 +363,99 @@ static bool free_results(Cursor* self, int flags)
         if ((flags & STATEMENT_MASK) == FREE_STATEMENT)
         {
             Py_BEGIN_ALLOW_THREADS
-            SQLFreeStmt(self->hstmt, SQL_CLOSE);
+            if(self->timeout == 0)
+            {
+                SQLFreeStmt(self->hstmt, SQL_CLOSE);
+            } else {
+                struct _SQLFreeStmtArgs sqlArgs = {
+                    &(self->hstmt),
+                    SQL_CLOSE,
+                    0,
+                    false,
+                };
+                pthread_create(&tid, nullptr, &sqlThreadSQLFreeStmt, &sqlArgs);
+                struct timespec ts;
+                timePlusTimeout(self->timeout, &ts);
+                int thread_ret = pthread_timedjoin_np(tid, nullptr, &ts);
+                reachedEnd = sqlArgs.reachedEnd;
+            }
+            if(thread_ret == EINVAL) {
+                int err = pthread_cancel(tid);
+                if (err == ESRCH) {
+                    return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+                }
+                return RaiseErrorV(0, PyExc_TypeError, "timeout value is invalid");
+            } else if (thread_ret == ETIMEDOUT || !reachedEnd) {
+                int err = pthread_cancel(tid);
+                if (err == ESRCH) {
+                    return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+                }
+            }
             Py_END_ALLOW_THREADS;
         }
         else
         {
             Py_BEGIN_ALLOW_THREADS
-            SQLFreeStmt(self->hstmt, SQL_UNBIND);
-            SQLFreeStmt(self->hstmt, SQL_RESET_PARAMS);
+            if(self->timeout == 0)
+            {
+                SQLFreeStmt(self->hstmt, SQL_UNBIND);
+            } else {
+                struct _SQLFreeStmtArgs sqlArgs = {
+                    &(self->hstmt),
+                    SQL_UNBIND,
+                    0,
+                    false,
+                };
+                pthread_create(&tid, nullptr, &sqlThreadSQLFreeStmt, &sqlArgs);
+                struct timespec ts;
+                timePlusTimeout(self->timeout, &ts);
+                int thread_ret = pthread_timedjoin_np(tid, nullptr, &ts);
+                reachedEnd = sqlArgs.reachedEnd;
+            }
+            if(thread_ret == EINVAL) {
+                int err = pthread_cancel(tid);
+                if (err == ESRCH) {
+                    return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+                }
+                return RaiseErrorV(0, PyExc_TypeError, "timeout value is invalid");
+            } else if (thread_ret == ETIMEDOUT || !reachedEnd) {
+                int err = pthread_cancel(tid);
+                if (err == ESRCH) {
+                    return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+                }
+            }
+
+            thread_ret = 0;
+            reachedEnd = false;
+
+            if(self->timeout == 0)
+            {
+                SQLFreeStmt(self->hstmt, SQL_RESET_PARAMS);
+            } else {
+                struct _SQLFreeStmtArgs sqlArgs = {
+                    &(self->hstmt),
+                    SQL_RESET_PARAMS,
+                    0,
+                    false,
+                };
+                pthread_create(&tid, nullptr, &sqlThreadSQLFreeStmt, &sqlArgs);
+                struct timespec ts;
+                timePlusTimeout(self->timeout, &ts);
+                int thread_ret = pthread_timedjoin_np(tid, nullptr, &ts);
+                reachedEnd = sqlArgs.reachedEnd;
+            }
+            if(thread_ret == EINVAL) {
+                int err = pthread_cancel(tid);
+                if (err == ESRCH) {
+                    return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+                }
+                return RaiseErrorV(0, PyExc_TypeError, "timeout value is invalid");
+            } else if (thread_ret == ETIMEDOUT || !reachedEnd) {
+                int err = pthread_cancel(tid);
+                if (err == ESRCH) {
+                    return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+                }
+            }
             Py_END_ALLOW_THREADS;
         }
 
@@ -621,14 +735,6 @@ struct _SQLExecDirectArgs
      sqlArgs->reachedEnd = true;
      void* ret = (void *) sqlArgs->ret;
      return ret;
- }
-
- int timePlusTimeout(long timeout, struct timespec* ts) {
-     if (clock_gettime(CLOCK_REALTIME, ts) == -1) {
-         return -1;
-     }
-     ts->tv_sec += timeout;
-     return 0;
  }
 
 static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool skip_first)
