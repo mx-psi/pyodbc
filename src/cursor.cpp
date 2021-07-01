@@ -331,6 +331,23 @@ static void* sqlThreadSQLFreeStmt(void *arg) {
     return ret;
 }
 
+struct _SQLFreeHandleArgs
+{
+    SQLSMALLINT htype;
+    HSTMT* hstmt;
+    SQLRETURN ret;
+    bool reachedEnd;
+};
+
+static void* sqlThreadSQLFreeHandle(void *arg) {
+    struct _SQLFreeHandleArgs* sqlArgs = (struct _SQLFreeHandleArgs *) arg;
+    sqlArgs->reachedEnd = false;
+    sqlArgs->ret = SQLFreeHandle(sqlArgs->htype, *(sqlArgs->hstmt));
+    sqlArgs->reachedEnd = true;
+    void* ret = (void *) sqlArgs->ret;
+    return ret;
+}
+
 static bool free_results(Cursor* self, int flags)
 {
     // Internal function called any time we need to free the memory associated with query results.  It is safe to call
@@ -492,6 +509,10 @@ static void closeimpl(Cursor* cur)
     //
     // This method releases the GIL lock while closing, so verify the HDBC still exists if you use it.
 
+    int thread_ret = 0;
+    pthread_t tid;
+    bool reachedEnd = true;
+
     free_results(cur, FREE_STATEMENT | FREE_PREPARED);
 
     FreeParameterInfo(cur);
@@ -504,8 +525,31 @@ static void closeimpl(Cursor* cur)
 
         SQLRETURN ret;
         Py_BEGIN_ALLOW_THREADS
-        ret = SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        if(cur->timeout == 0)
+        {
+            ret = SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        } else
+        {
+            struct _SQLFreeHandleArgs sqlArgs = {
+                SQL_HANDLE_STMT,
+                &hstmt,
+                0,
+                false,
+            };
+            pthread_create(&tid, nullptr, &sqlThreadSQLFreeHandle, &sqlArgs);
+            struct timespec ts;
+            timePlusTimeout(cur->timeout, &ts);
+            int thread_ret = pthread_timedjoin_np(tid, nullptr, &ts);
+            reachedEnd = sqlArgs.reachedEnd;
+            ret = sqlArgs.ret;
+        }
         Py_END_ALLOW_THREADS
+
+        if(thread_ret == EINVAL) {
+            int err = pthread_cancel(tid);
+        } else if (thread_ret == ETIMEDOUT || !reachedEnd) {
+            int err = pthread_cancel(tid);
+        }
 
         // If there is already an exception, don't overwrite it.
         if (!SQL_SUCCEEDED(ret) && !PyErr_Occurred())
