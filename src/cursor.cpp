@@ -24,39 +24,7 @@
 #include "errors.h"
 #include "getdata.h"
 #include "dbspecific.h"
-#include <datetime.h>
-#include <pthread.h>
-
-int timePlusTimeout(long timeout, struct timespec* ts) {
-    if (clock_gettime(CLOCK_REALTIME, ts) == -1) {
-        return -1;
-    }
-    ts->tv_sec += timeout;
-    return 0;
-}
-
-int threadFunc(void* (*f)(void*), long timeout, void* args) {
-    pthread_t tid;
-    pthread_create(&tid, nullptr, f, args);
-    struct timespec ts;
-    timePlusTimeout(timeout, &ts);
-    int thread_ret = pthread_timedjoin_np(tid, nullptr, &ts);
-
-    if(thread_ret == EINVAL) {
-        int err = pthread_cancel(tid);
-        if (err == ESRCH) {
-            return 3;
-        }
-        return 2;
-    } else if (thread_ret == ETIMEDOUT) {
-        int err = pthread_cancel(tid);
-        if (err == ESRCH) {
-            return 3;
-        }
-        return 1;
-    }
-    return 0;
-}
+#include "sqlthreading.h"
 
 enum
 {
@@ -337,39 +305,6 @@ enum free_results_flags
     PREPARED_MASK  = 0x0C
 };
 
-struct _SQLFreeStmtArgs
-{
-    HSTMT* hstmt;
-    SQLUSMALLINT opt;
-    SQLRETURN ret;
-    bool reachedEnd;
-};
-
-static void* sqlThreadSQLFreeStmt(void *arg) {
-    struct _SQLFreeStmtArgs* sqlArgs = (struct _SQLFreeStmtArgs *) arg;
-    sqlArgs->reachedEnd = false;
-    sqlArgs->ret = SQLFreeStmt(*(sqlArgs->hstmt), sqlArgs->opt);
-    sqlArgs->reachedEnd = true;
-    void* ret = (void *) sqlArgs->ret;
-    return ret;
-}
-
-struct _SQLFreeHandleArgs
-{
-    SQLSMALLINT htype;
-    HSTMT* hstmt;
-    SQLRETURN ret;
-    bool reachedEnd;
-};
-
-static void* sqlThreadSQLFreeHandle(void *arg) {
-    struct _SQLFreeHandleArgs* sqlArgs = (struct _SQLFreeHandleArgs *) arg;
-    sqlArgs->reachedEnd = false;
-    sqlArgs->ret = SQLFreeHandle(sqlArgs->htype, *(sqlArgs->hstmt));
-    sqlArgs->reachedEnd = true;
-    void* ret = (void *) sqlArgs->ret;
-    return ret;
-}
 
 static bool free_results(Cursor* self, int flags)
 {
@@ -379,7 +314,6 @@ static bool free_results(Cursor* self, int flags)
     // If we ran out of memory, it is possible that we have a cursor but colinfos is zero.  However, we should be
     // deleting this object, so the cursor will be freed when the HSTMT is destroyed. */
 
-    pthread_t tid;
     int thread_ret = 0;
 
     I((flags & STATEMENT_MASK) != 0);
@@ -406,7 +340,7 @@ static bool free_results(Cursor* self, int flags)
             {
                 SQLFreeStmt(self->hstmt, SQL_CLOSE);
             } else {
-                struct _SQLFreeStmtArgs sqlArgs = {
+                struct SQLFreeStmtArgs sqlArgs = {
                     &(self->hstmt),
                     SQL_CLOSE,
                     0,
@@ -431,7 +365,7 @@ static bool free_results(Cursor* self, int flags)
                 SQLFreeStmt(self->hstmt, SQL_UNBIND);
             } else
             {
-                struct _SQLFreeStmtArgs sqlArgs = {
+                struct SQLFreeStmtArgs sqlArgs = {
                     &(self->hstmt),
                     SQL_UNBIND,
                     0,
@@ -456,7 +390,7 @@ static bool free_results(Cursor* self, int flags)
             {
                 SQLFreeStmt(self->hstmt, SQL_RESET_PARAMS);
             } else {
-                struct _SQLFreeStmtArgs sqlArgs = {
+                struct SQLFreeStmtArgs sqlArgs = {
                     &(self->hstmt),
                     SQL_RESET_PARAMS,
                     0,
@@ -509,7 +443,6 @@ static void closeimpl(Cursor* cur)
     // This method releases the GIL lock while closing, so verify the HDBC still exists if you use it.
 
     int thread_ret = 0;
-    pthread_t tid;
     bool reachedEnd = true;
 
     free_results(cur, FREE_STATEMENT | FREE_PREPARED);
@@ -529,7 +462,7 @@ static void closeimpl(Cursor* cur)
             ret = SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
         } else
         {
-            struct _SQLFreeHandleArgs sqlArgs = {
+            struct SQLFreeHandleArgs sqlArgs = {
                 SQL_HANDLE_STMT,
                 &hstmt,
                 0,
@@ -702,73 +635,6 @@ static bool PrepareResults(Cursor* cur, int cCols)
     return true;
 }
 
-struct _SQLExecuteArgs
-{
-    HSTMT* hstmt; 
-    SQLRETURN ret;
-    bool reachedEnd;
-};
-
- static void* sqlThreadSQLExecute(void *arg) {
-     struct _SQLExecuteArgs* sqlArgs = (struct _SQLExecuteArgs *) arg;
-     sqlArgs->reachedEnd = false;
-     sqlArgs->ret = SQLExecute(*(sqlArgs->hstmt));
-     sqlArgs->reachedEnd = true;
-     void* ret = (void *) sqlArgs->ret;
-     return ret;
- }
-
-struct _SQLExecDirectWArgs 
-{
-    HSTMT* hstmt;
-    SQLWCHAR* pch;
-    SQLINTEGER cch;
-    SQLRETURN ret;
-    bool reachedEnd;
-};
-
- static void* sqlThreadSQLExecDirectW(void *arg) {
-     struct _SQLExecDirectWArgs* sqlArgs = (struct _SQLExecDirectWArgs *) arg;
-     sqlArgs->reachedEnd = false;
-     sqlArgs->ret = SQLExecDirectW(*(sqlArgs->hstmt), sqlArgs->pch, sqlArgs->cch);
-     sqlArgs->reachedEnd = true;
-     void* ret = (void *) sqlArgs->ret;
-     return ret;
- }
-
-struct _SQLExecDirectArgs 
-{
-    HSTMT* hstmt;
-    SQLCHAR* pch;
-    SQLINTEGER cch;
-    SQLRETURN ret;
-    bool reachedEnd;
-};
-
- static void* sqlThreadSQLExecDirect(void *arg) {
-     struct _SQLExecDirectArgs* sqlArgs = (struct _SQLExecDirectArgs *) arg;
-     sqlArgs->reachedEnd = false;
-     sqlArgs->ret = SQLExecDirect(*(sqlArgs->hstmt), sqlArgs->pch, sqlArgs->cch);
-     sqlArgs->reachedEnd = true;
-     void* ret = (void *) sqlArgs->ret;
-     return ret;
- }
-
- struct _SQLFetchArgs
-{
-    HSTMT* hstmt;
-    SQLRETURN ret;
-    bool reachedEnd;
-};
-
- static void* sqlThreadSQLFetch(void *arg) {
-     struct _SQLFetchArgs* sqlArgs = (struct _SQLFetchArgs *) arg;
-     sqlArgs->reachedEnd = false;
-     sqlArgs->ret = SQLFetch(*(sqlArgs->hstmt));
-     sqlArgs->reachedEnd = true;
-     void* ret = (void *) sqlArgs->ret;
-     return ret;
- }
 
 static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool skip_first)
 {
@@ -816,7 +682,6 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
 
         szLastFunction = "SQLExecute";
         int thread_ret = 0;
-        pthread_t tid;
         bool reachedEnd = false;
         Py_BEGIN_ALLOW_THREADS
         if(cur->timeout == 0)
@@ -824,7 +689,7 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
             ret = SQLExecute(cur->hstmt);
         } else 
         {
-            struct _SQLExecuteArgs sqlArgs = {
+            struct SQLExecuteArgs sqlArgs = {
                 &(cur->hstmt),
                 0,
                 false,
@@ -879,14 +744,13 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
         const char* pch = PyBytes_AS_STRING(query.Get());
         SQLINTEGER  cch = (SQLINTEGER)(PyBytes_GET_SIZE(query.Get()) / (isWide ? sizeof(ODBCCHAR) : 1));
         bool reachedEnd = true;
-        pthread_t tid;
         int thread_ret = 0;
         Py_BEGIN_ALLOW_THREADS
         if (isWide){
             if (cur->timeout == 0) {
                 ret = SQLExecDirectW(cur->hstmt, (SQLWCHAR*)pch, cch);
             } else {
-                struct _SQLExecDirectWArgs sqlArgs = {
+                struct SQLExecDirectWArgs sqlArgs = {
                     &(cur->hstmt),
                     (SQLWCHAR*)pch, 
                     cch,
@@ -904,7 +768,7 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
             if (cur->timeout == 0) {
                 ret = SQLExecDirect(cur->hstmt, (SQLCHAR*)pch, cch);
             } else {
-                struct _SQLExecDirectArgs sqlArgs = {
+                struct SQLExecDirectArgs sqlArgs = {
                     &(cur->hstmt),
                     (SQLCHAR*)pch, 
                     cch,
@@ -1360,7 +1224,6 @@ static PyObject* Cursor_fetch(Cursor* cur)
     Py_ssize_t field_count, i;
     PyObject** apValues;
     int thread_ret = 0;
-    pthread_t tid;
     bool reachedEnd = false;
 
 
@@ -1369,7 +1232,7 @@ static PyObject* Cursor_fetch(Cursor* cur)
     {
         ret = SQLFetch(cur->hstmt);
     } else {
-        struct _SQLFetchArgs sqlArgs = {
+        struct SQLFetchArgs sqlArgs = {
             &(cur->hstmt),
             0,
             false,
@@ -2567,29 +2430,11 @@ static PyObject* Cursor_enter(PyObject* self, PyObject* args)
     return self;
 }
 
-struct _SQLEndTranArgs 
-{
-    SQLSMALLINT htype;
-    HDBC handle;
-    SQLSMALLINT completionType;
-    SQLRETURN ret;
-    bool reachedEnd;
-};
-
-static void* sqlThreadSQLEndTran(void *arg) {
-    struct _SQLEndTranArgs* sqlArgs = (struct _SQLEndTranArgs *) arg;
-    sqlArgs->reachedEnd = false;
-    sqlArgs->ret = SQLEndTran(sqlArgs->htype, sqlArgs->handle, sqlArgs->completionType);
-    sqlArgs->reachedEnd = true;
-    void* ret = (void *) sqlArgs->ret;
-    return ret;
-}
 
 static char exit_doc[] = "__exit__(*excinfo) -> None.  Commits the connection if necessary..";
 static PyObject* Cursor_exit(PyObject* self, PyObject* args)
 {
     int thread_ret = 0;
-    pthread_t tid;
     bool reachedEnd = false;
 
     Cursor* cursor = Cursor_Validate(self, CURSOR_REQUIRE_OPEN | CURSOR_RAISE_ERROR);
@@ -2608,7 +2453,7 @@ static PyObject* Cursor_exit(PyObject* self, PyObject* args)
         {
             ret = SQLEndTran(SQL_HANDLE_DBC, cursor->cnxn->hdbc, SQL_COMMIT);
         } else {
-            struct _SQLEndTranArgs sqlArgs = {
+            struct SQLEndTranArgs sqlArgs = {
                 SQL_HANDLE_DBC,
                 cursor->cnxn->hdbc,
                 SQL_COMMIT,
