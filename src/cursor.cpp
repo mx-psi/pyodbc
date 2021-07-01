@@ -2593,9 +2593,31 @@ static PyObject* Cursor_enter(PyObject* self, PyObject* args)
     return self;
 }
 
+struct _SQLEndTranArgs 
+{
+    SQLSMALLINT htype;
+    HDBC handle;
+    SQLSMALLINT completionType;
+    SQLRETURN ret;
+    bool reachedEnd;
+};
+
+static void* sqlThreadSQLEndTran(void *arg) {
+    struct _SQLEndTranArgs* sqlArgs = (struct _SQLEndTranArgs *) arg;
+    sqlArgs->reachedEnd = false;
+    sqlArgs->ret = SQLEndTran(sqlArgs->htype, sqlArgs->handle, sqlArgs->completionType);
+    sqlArgs->reachedEnd = true;
+    void* ret = (void *) sqlArgs->ret;
+    return ret;
+}
+
 static char exit_doc[] = "__exit__(*excinfo) -> None.  Commits the connection if necessary..";
 static PyObject* Cursor_exit(PyObject* self, PyObject* args)
 {
+    int thread_ret = 0;
+    pthread_t tid;
+    bool reachedEnd = true;
+
     Cursor* cursor = Cursor_Validate(self, CURSOR_REQUIRE_OPEN | CURSOR_RAISE_ERROR);
     if (!cursor)
         return 0;
@@ -2607,8 +2629,40 @@ static PyObject* Cursor_exit(PyObject* self, PyObject* args)
     {
         SQLRETURN ret;
         Py_BEGIN_ALLOW_THREADS
-        ret = SQLEndTran(SQL_HANDLE_DBC, cursor->cnxn->hdbc, SQL_COMMIT);
+        if(cursor->timeout == 0)
+        {
+            ret = SQLEndTran(SQL_HANDLE_DBC, cursor->cnxn->hdbc, SQL_COMMIT);
+        } else
+        {
+            struct _SQLEndTranArgs sqlArgs = {
+                SQL_HANDLE_DBC,
+                cursor->cnxn->hdbc,
+                SQL_COMMIT,
+                0,
+                false,
+            };
+            pthread_create(&tid, nullptr, &sqlThreadSQLEndTran, &sqlArgs);
+            struct timespec ts;
+            timePlusTimeout(cursor->timeout, &ts);
+            int thread_ret = pthread_timedjoin_np(tid, nullptr, &ts);
+            reachedEnd = sqlArgs.reachedEnd;
+            ret = sqlArgs.ret;
+        }
         Py_END_ALLOW_THREADS
+
+        if(thread_ret == EINVAL) {
+            int err = pthread_cancel(tid);
+            if (err == ESRCH) {
+                return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+            }
+            return RaiseErrorV(0, PyExc_TypeError, "timeout value is invalid");
+        } else if (thread_ret == ETIMEDOUT || !reachedEnd) {
+            int err = pthread_cancel(tid);
+            if (err == ESRCH) {
+                return RaiseErrorV(0, ProgrammingError, "internal error: thread id invalid");
+            }
+            return RaiseErrorV(0, PyExc_TypeError, "SQL query timed out");
+        }
 
         if (!SQL_SUCCEEDED(ret))
             return RaiseErrorFromHandle(cursor->cnxn, "SQLEndTran(SQL_COMMIT)", cursor->cnxn->hdbc, cursor->hstmt);
