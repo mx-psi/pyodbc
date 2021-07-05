@@ -508,7 +508,7 @@ static int Connection_clear(PyObject* self)
         Py_BEGIN_ALLOW_THREADS
         if (cnxn->nAutoCommit == SQL_AUTOCOMMIT_OFF)
         {
-            if(cnxn->timeout == 0)
+            if(cnxn->thread_timeout == 0)
             {
                 SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK);
             } else {
@@ -519,13 +519,13 @@ static int Connection_clear(PyObject* self)
                     0,
                     false,
                 };
-                threadFunc(sqlThreadSQLEndTran, cnxn->timeout, &sqlArgs);
+                threadFunc(sqlThreadSQLEndTran, cnxn->thread_timeout, &sqlArgs);
             }
         }
         Py_END_ALLOW_THREADS
 
         Py_BEGIN_ALLOW_THREADS
-        if(cnxn->timeout == 0)
+        if(cnxn->thread_timeout == 0)
         {
             SQLDisconnect(hdbc);
         } else {
@@ -534,12 +534,12 @@ static int Connection_clear(PyObject* self)
                 0,
                 false,
             };
-            threadFunc(sqlThreadSQLDisconnect, cnxn->timeout, &sqlArgs);
+            threadFunc(sqlThreadSQLDisconnect, cnxn->thread_timeout, &sqlArgs);
         }
         Py_END_ALLOW_THREADS
 
         Py_BEGIN_ALLOW_THREADS
-        if(cnxn->timeout == 0)
+        if(cnxn->thread_timeout == 0)
         {
             SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
         } else {
@@ -549,7 +549,7 @@ static int Connection_clear(PyObject* self)
                 0,
                 false,
             };
-            threadFunc(sqlThreadSQLFreeHandle, cnxn->timeout, &sqlArgs);
+            threadFunc(sqlThreadSQLFreeHandle, cnxn->thread_timeout, &sqlArgs);
         }
         Py_END_ALLOW_THREADS
     }
@@ -1668,6 +1668,15 @@ static PyGetSetDef Connection_getseters[] = {
     { 0 }
 };
 
+static char thread_timeout_doc[] =
+    "This read/write attribute specifies whether to stop queries after a timeout.\n";
+
+static PyMemberDef Connection_members[] =
+{
+    {"thread_timeout", T_LONG, offsetof(Connection, thread_timeout), 0, thread_timeout_doc },
+    { 0 }
+};
+
 PyTypeObject ConnectionType =
 {
     PyVarObject_HEAD_INIT(0, 0)
@@ -1698,7 +1707,7 @@ PyTypeObject ConnectionType =
     0,                          // tp_iter
     0,                          // tp_iternext
     Connection_methods,         // tp_methods
-    0,                          // tp_members
+    Connection_members,         // tp_members
     Connection_getseters,       // tp_getset
     0,                          // tp_base
     0,                          // tp_dict

@@ -45,6 +45,9 @@ struct Connection
     // The connection timeout in seconds.
     long timeout;
 
+    // The timeout for SQL query execution in threads.
+    long thread_timeout;
+
     // Pointer connection attributes may require that the pointed-to object be kept
     // valid until some unspecified time in the future, so keep them here for now.
     PyObject* attrs_before;

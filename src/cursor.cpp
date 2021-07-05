@@ -336,7 +336,7 @@ static bool free_results(Cursor* self, int flags)
         if ((flags & STATEMENT_MASK) == FREE_STATEMENT)
         {
             Py_BEGIN_ALLOW_THREADS
-            if(self->timeout == 0)
+            if(self->cnxn->thread_timeout == 0)
             {
                 SQLFreeStmt(self->hstmt, SQL_CLOSE);
             } else {
@@ -346,7 +346,7 @@ static bool free_results(Cursor* self, int flags)
                     0,
                     false,
                 };
-                thread_ret = threadFunc(sqlThreadSQLFreeStmt, self->timeout, &sqlArgs);
+                thread_ret = threadFunc(sqlThreadSQLFreeStmt, self->cnxn->thread_timeout, &sqlArgs);
             }
             Py_END_ALLOW_THREADS
             if (thread_ret == 3)
@@ -360,7 +360,7 @@ static bool free_results(Cursor* self, int flags)
         else
         {
             Py_BEGIN_ALLOW_THREADS
-            if(self->timeout == 0)
+            if(self->cnxn->thread_timeout == 0)
             {
                 SQLFreeStmt(self->hstmt, SQL_UNBIND);
             } else
@@ -371,7 +371,7 @@ static bool free_results(Cursor* self, int flags)
                     0,
                     false,
                 };
-                thread_ret = threadFunc(sqlThreadSQLFreeStmt, self->timeout, &sqlArgs);
+                thread_ret = threadFunc(sqlThreadSQLFreeStmt, self->cnxn->thread_timeout, &sqlArgs);
             }
             Py_END_ALLOW_THREADS
 
@@ -386,7 +386,7 @@ static bool free_results(Cursor* self, int flags)
             thread_ret = 0;
 
             Py_BEGIN_ALLOW_THREADS
-            if(self->timeout == 0)
+            if(self->cnxn->thread_timeout == 0)
             {
                 SQLFreeStmt(self->hstmt, SQL_RESET_PARAMS);
             } else {
@@ -396,7 +396,7 @@ static bool free_results(Cursor* self, int flags)
                     0,
                     false,
                 };
-                thread_ret = threadFunc(sqlThreadSQLFreeStmt, self->timeout, &sqlArgs);
+                thread_ret = threadFunc(sqlThreadSQLFreeStmt, self->cnxn->thread_timeout, &sqlArgs);
             }
             Py_END_ALLOW_THREADS
 
@@ -457,7 +457,7 @@ static void closeimpl(Cursor* cur)
 
         SQLRETURN ret;
         Py_BEGIN_ALLOW_THREADS
-        if(cur->timeout == 0)
+        if(cur->cnxn->thread_timeout == 0)
         {
             ret = SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
         } else
@@ -468,7 +468,7 @@ static void closeimpl(Cursor* cur)
                 0,
                 false,
             };
-            thread_ret = threadFunc(sqlThreadSQLFreeHandle, cur->timeout, &sqlArgs);
+            thread_ret = threadFunc(sqlThreadSQLFreeHandle, cur->cnxn->thread_timeout, &sqlArgs);
             ret = sqlArgs.ret;
         }
         Py_END_ALLOW_THREADS
@@ -684,7 +684,7 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
         int thread_ret = 0;
         bool reachedEnd = false;
         Py_BEGIN_ALLOW_THREADS
-        if(cur->timeout == 0)
+        if(cur->cnxn->thread_timeout == 0)
         {
             ret = SQLExecute(cur->hstmt);
         } else 
@@ -694,7 +694,7 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
                 0,
                 false,
             };
-            thread_ret = threadFunc(sqlThreadSQLExecute, cur->timeout, &sqlArgs);
+            thread_ret = threadFunc(sqlThreadSQLExecute, cur->cnxn->thread_timeout, &sqlArgs);
             ret = sqlArgs.ret;
             reachedEnd = sqlArgs.reachedEnd;
 
@@ -747,7 +747,7 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
         int thread_ret = 0;
         Py_BEGIN_ALLOW_THREADS
         if (isWide){
-            if (cur->timeout == 0) {
+            if (cur->cnxn->thread_timeout == 0) {
                 ret = SQLExecDirectW(cur->hstmt, (SQLWCHAR*)pch, cch);
             } else {
                 struct SQLExecDirectWArgs sqlArgs = {
@@ -758,14 +758,14 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
                     false,
                 };
 
-                thread_ret = threadFunc(sqlThreadSQLExecDirectW, cur->timeout, &sqlArgs);
+                thread_ret = threadFunc(sqlThreadSQLExecDirectW, cur->cnxn->thread_timeout, &sqlArgs);
                 ret = sqlArgs.ret;
                 reachedEnd = sqlArgs.reachedEnd;
             }
         }
         else 
         {
-            if (cur->timeout == 0) {
+            if (cur->cnxn->thread_timeout == 0) {
                 ret = SQLExecDirect(cur->hstmt, (SQLCHAR*)pch, cch);
             } else {
                 struct SQLExecDirectArgs sqlArgs = {
@@ -776,7 +776,7 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
                     false,
                 };
 
-                thread_ret = threadFunc(sqlThreadSQLExecDirect, cur->timeout, &sqlArgs);
+                thread_ret = threadFunc(sqlThreadSQLExecDirect, cur->cnxn->thread_timeout, &sqlArgs);
                 ret = sqlArgs.ret;
                 reachedEnd = sqlArgs.reachedEnd;
             }
@@ -1228,7 +1228,7 @@ static PyObject* Cursor_fetch(Cursor* cur)
 
 
     Py_BEGIN_ALLOW_THREADS
-    if(cur->timeout == 0)
+    if(cur->cnxn->thread_timeout == 0)
     {
         ret = SQLFetch(cur->hstmt);
     } else {
@@ -1237,7 +1237,7 @@ static PyObject* Cursor_fetch(Cursor* cur)
             0,
             false,
         };
-        thread_ret = threadFunc(sqlThreadSQLFetch, cur->timeout, &sqlArgs);
+        thread_ret = threadFunc(sqlThreadSQLFetch, cur->cnxn->thread_timeout, &sqlArgs);
         ret = sqlArgs.ret;
         reachedEnd = sqlArgs.reachedEnd;
     }
@@ -2281,9 +2281,6 @@ static char fastexecmany_doc[] =
     "This read/write attribute specifies whether to use a faster executemany() which\n" \
     "uses parameter arrays. Not all drivers may work with this implementation.";
 
-static char timeout_doc[] =
-    "This read/write attribute specifies whether to stop queries after a timeout.\n";
-
 static PyMemberDef Cursor_members[] =
 {
     {"rowcount",    T_INT,       offsetof(Cursor, rowcount),        READONLY, rowcount_doc },
@@ -2291,7 +2288,6 @@ static PyMemberDef Cursor_members[] =
     {"arraysize",   T_INT,       offsetof(Cursor, arraysize),       0,        arraysize_doc },
     {"connection",  T_OBJECT_EX, offsetof(Cursor, cnxn),            READONLY, connection_doc },
     {"fast_executemany",T_BOOL,  offsetof(Cursor, fastexecmany),    0,        fastexecmany_doc },
-    {"timeout",     T_LONG,      offsetof(Cursor, timeout),         0,        timeout_doc },
     { 0 }
 };
 
@@ -2449,7 +2445,7 @@ static PyObject* Cursor_exit(PyObject* self, PyObject* args)
         SQLRETURN ret;
         Py_BEGIN_ALLOW_THREADS
 
-        if(cursor->timeout == 0)
+        if(cursor->cnxn->thread_timeout == 0)
         {
             ret = SQLEndTran(SQL_HANDLE_DBC, cursor->cnxn->hdbc, SQL_COMMIT);
         } else {
@@ -2460,7 +2456,7 @@ static PyObject* Cursor_exit(PyObject* self, PyObject* args)
                 0,
                 false,
             };
-            thread_ret = threadFunc(sqlThreadSQLEndTran, cursor->timeout, &sqlArgs);
+            thread_ret = threadFunc(sqlThreadSQLEndTran, cursor->cnxn->thread_timeout, &sqlArgs);
             ret = sqlArgs.ret;
             reachedEnd = sqlArgs.reachedEnd;
         }
@@ -2611,7 +2607,6 @@ Cursor_New(Connection* cnxn)
         cur->rowcount          = -1;
         cur->map_name_to_index = 0;
         cur->fastexecmany      = 0;
-        cur->timeout           = 0;
 
         Py_INCREF(cnxn);
         Py_INCREF(cur->description);
@@ -2641,7 +2636,6 @@ Cursor_New(Connection* cnxn)
                 return 0;
             }
 
-            cur->timeout = cnxn->timeout;
         }
 
         TRACE("cursor.new cnxn=%p hdbc=%d cursor=%p hstmt=%d\n", (Connection*)cur->cnxn, ((Connection*)cur->cnxn)->hdbc, cur, cur->hstmt);

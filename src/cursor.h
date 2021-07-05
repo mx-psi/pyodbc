@@ -140,9 +140,6 @@ struct Cursor
     // The Cursor.rowcount attribute from the DB API specification.
     int rowcount;
 
-    // The timeout for query execution.
-    long timeout;
-
     // A dictionary that maps from column name (PyString) to index into the result columns (PyInteger).  This is
     // constructued during an execute and shared with each row (reference counted) to implement accessing results by
     // column name.
