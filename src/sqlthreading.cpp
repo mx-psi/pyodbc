@@ -92,7 +92,16 @@ void* sqlThreadSQLFetch(void *arg) {
 void* sqlThreadSQLEndTran(void *arg) {
     struct SQLEndTranArgs* sqlArgs = (struct SQLEndTranArgs *) arg;
     sqlArgs->reachedEnd = false;
-    sqlArgs->ret = SQLEndTran(sqlArgs->htype, sqlArgs->handle, sqlArgs->completionType);
+    sqlArgs->ret = SQLEndTran(sqlArgs->htype, *(sqlArgs->hdbc), sqlArgs->completionType);
+    sqlArgs->reachedEnd = true;
+    void* ret = (void *) sqlArgs->ret;
+    return ret;
+}
+
+void* sqlThreadSQLDisconnect(void *arg) {
+    struct SQLDisconnectArgs* sqlArgs = (struct SQLDisconnectArgs *) arg;
+    sqlArgs->reachedEnd = false;
+    sqlArgs->ret = SQLDisconnect(*(sqlArgs->hdbc));
     sqlArgs->reachedEnd = true;
     void* ret = (void *) sqlArgs->ret;
     return ret;

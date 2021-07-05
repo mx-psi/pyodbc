@@ -2455,7 +2455,7 @@ static PyObject* Cursor_exit(PyObject* self, PyObject* args)
         } else {
             struct SQLEndTranArgs sqlArgs = {
                 SQL_HANDLE_DBC,
-                cursor->cnxn->hdbc,
+                &(cursor->cnxn->hdbc),
                 SQL_COMMIT,
                 0,
                 false,
@@ -2640,6 +2640,8 @@ Cursor_New(Connection* cnxn)
                 Py_DECREF(cur);
                 return 0;
             }
+
+            cur->timeout = cnxn->timeout;
         }
 
         TRACE("cursor.new cnxn=%p hdbc=%d cursor=%p hstmt=%d\n", (Connection*)cur->cnxn, ((Connection*)cur->cnxn)->hdbc, cur, cur->hstmt);

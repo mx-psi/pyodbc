@@ -59,8 +59,15 @@ struct SQLFetchArgs
 struct SQLEndTranArgs 
 {
     SQLSMALLINT htype;
-    HDBC handle;
+    HDBC* hdbc;
     SQLSMALLINT completionType;
+    SQLRETURN ret;
+    bool reachedEnd;
+};
+
+struct SQLDisconnectArgs
+{
+    HDBC* hdbc;
     SQLRETURN ret;
     bool reachedEnd;
 };
@@ -78,5 +85,8 @@ void* sqlThreadSQLExecDirect(void *arg);
 void* sqlThreadSQLFetch(void *arg);
 
 void* sqlThreadSQLEndTran(void *arg);
+
+void* sqlThreadSQLDisconnect(void *arg);
+
 
 #endif // SQLTHREADING_H

@@ -17,6 +17,7 @@
 #include "pyodbcmodule.h"
 #include "errors.h"
 #include "cnxninfo.h"
+#include "sqlthreading.h"
 
 #if PY_MAJOR_VERSION < 3
 static bool IsStringType(PyObject* t) { return (void*)t == (void*)&PyString_Type; }
@@ -503,12 +504,53 @@ static int Connection_clear(PyObject* self)
 
         HDBC hdbc = cnxn->hdbc;
         cnxn->hdbc = SQL_NULL_HANDLE;
+
         Py_BEGIN_ALLOW_THREADS
         if (cnxn->nAutoCommit == SQL_AUTOCOMMIT_OFF)
-            SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK);
+        {
+            if(cnxn->timeout == 0)
+            {
+                SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK);
+            } else {
+                struct SQLEndTranArgs sqlArgs = {
+                    SQL_HANDLE_DBC,
+                    &hdbc,
+                    SQL_COMMIT,
+                    0,
+                    false,
+                };
+                threadFunc(sqlThreadSQLEndTran, cnxn->timeout, &sqlArgs);
+            }
+        }
+        Py_END_ALLOW_THREADS
 
-        SQLDisconnect(hdbc);
-        SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
+        Py_BEGIN_ALLOW_THREADS
+        if(cnxn->timeout == 0)
+        {
+            SQLDisconnect(hdbc);
+        } else {
+            struct SQLDisconnectArgs sqlArgs = {
+                &hdbc,
+                0,
+                false,
+            };
+            threadFunc(sqlThreadSQLDisconnect, cnxn->timeout, &sqlArgs);
+        }
+        Py_END_ALLOW_THREADS
+
+        Py_BEGIN_ALLOW_THREADS
+        if(cnxn->timeout == 0)
+        {
+            SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
+        } else {
+            struct SQLFreeHandleArgs sqlArgs = {
+                SQL_HANDLE_DBC,
+                &hdbc,
+                0,
+                false,
+            };
+            threadFunc(sqlThreadSQLFreeHandle, cnxn->timeout, &sqlArgs);
+        }
         Py_END_ALLOW_THREADS
     }
 
